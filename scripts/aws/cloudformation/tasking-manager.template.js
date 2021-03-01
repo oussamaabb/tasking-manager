@@ -45,11 +45,13 @@ const Parameters = {
   },
   ELBSubnets: {
     Description: 'ELB subnets',
-    Type: 'String'
+    Type: 'String',
+    Default: 'ex: subnet-a1b2c3,subnet-d4e5f6,..'
   },
   SSLCertificateIdentifier: {
     Type: 'String',
-    Description: 'SSL certificate for HTTPS protocol'
+    Description: 'SSL certificate for HTTPS protocol',
+    Default: 'ex: certificate/bb59df0a-ff8d-416c-bfb2-cc3a2e97c8ec'
   },
   TaskingManagerLogDirectory: {
     Description: 'TM_LOG_DIR environment variable',
@@ -106,7 +108,8 @@ const Parameters = {
   },
   TaskingManagerSMTPPort: {
     Description: 'TM_SMTP_PORT environment variable',
-    Type: 'String'
+    Type: 'String',
+    Default: '587'
   },
   TaskingManagerDefaultChangesetComment: {
     Description: 'TM_DEFAULT_CHANGESET_COMMENT environment variable',
@@ -114,7 +117,9 @@ const Parameters = {
   },
   TaskingManagerURL: {
     Description: 'URL for setting CNAME in Distribution; Ex: example.hotosm.org',
-    Type: 'String'
+    Type: 'String',
+    AllowedPattern: '^([a-zA-Z0-9-]*\\.){2}(\\w){2,20}$',
+    ConstraintDescription: 'Parameter must be in the form of a url with subdomain.'
   },
   TaskingManagerOrgName: {
     Description: 'Org Name',
@@ -127,6 +132,40 @@ const Parameters = {
   SentryBackendDSN: {
     Description: "DSN for sentry",
     Type: 'String'
+  },
+  TaskingManagerLogo: {
+    Description: "URL for logo",
+    Type: "String"
+  },
+  PostgresPasswordManagedSecret: {
+    Type: 'String',
+    Description: 'Secrets Manager secret name for PostgreSQL password',
+    Default: 'ex: prod/taskingmanager-backend/database-f6BCLK'
+  },
+  SMTPPassword: {
+    Type: 'String',
+    Description: 'Secrets Manager secret name for PostgreSQL password',
+    Default: 'ex: demo/taskingmanager-backend/smtp-password'
+  },
+  OAuth2ConsumerSecret: {
+    Type: 'String',
+    Description: 'Secrets Manager secret name for OSM Oauth2 App Consumer secret',
+    Default: 'ex: demo/taskingmanager-backend/consumer-secret'
+  },
+  NewRelicLicenseKey: {
+    Type: 'String',
+    Description: 'Secrets Manager secret name for New Relic License Key',
+    Default: 'ex: demo/taskingmanager-backend/newrelic-license'
+  },
+  ImageUploadAPIKey: {
+    Type: 'String',
+    Description: 'Secrets Manager secret name for Image Upload API Key',
+    Default: 'ex: demo/taskingmanager-backend/image-upload-api-key'
+  },
+  TaskingManagerManagedSecret: {
+    Type: 'String',
+    Description: 'Secrets Manager secret name for TM Secret',
+    Default: 'ex: demo/taskingmanager-backend/tm-secret'
   }
 };
 
@@ -134,12 +173,15 @@ const Conditions = {
   UseASnapshot: cf.notEquals(cf.ref('DBSnapshot'), ''),
   DatabaseDumpFileGiven: cf.notEquals(cf.ref('DatabaseDump'), ''),
   IsTaskingManagerProduction: cf.equals(cf.ref('AutoscalingPolicy'), 'production'),
-  IsTaskingManagerDemo: cf.equals(cf.ref('AutoscalingPolicy'), 'Demo (max 3)')
+  IsTaskingManagerDemo: cf.equals(cf.ref('AutoscalingPolicy'), 'Demo (max 3)'),
+  IsHOTOSMUrl: cf.equals(
+    cf.select('1', cf.split('.', cf.ref('TaskingManagerURL')))
+    , 'hotosm')
 };
 
 const Resources = {
   TaskingManagerECSCluster: {
-    Type: 'AWS::ECS:Cluster',
+    Type: 'AWS::ECS::Cluster',
     Properties: {
       CapacityProviders: [
         'FARGATE',
@@ -166,13 +208,38 @@ const Resources = {
     Type: 'AWS::ECS::TaskDefinition',
     Properties: {
       ContainerDefinitions: [{
+        Name: 'TM4_Backend_Service',
+        Environment: [
+          { 'Name': 'POSTGRES_ENDPOINT', 'Value': cf.getAtt('TaskingManagerRDS','Endpoint.Address') },
+          { 'Name': 'POSTGRES_DB', 'Value': 'dummy' },
+          { 'Name': 'POSTGRES_USER', 'Value': cf.join(':', ['{{resolve:secretsmanager', cf.ref('TaskingManagerRDSSecret'), 'SecretString:username}}']) },
+          { 'Name': 'TM_APP_BASE_URL', 'Value': cf.ref('TaskingManagerAppBaseUrl') },
+          { 'Name': 'TM_CONSUMER_KEY', 'Value': cf.ref('TaskingManagerConsumerKey') },
+          { 'Name': 'TM_SMTP_HOST', 'Value': cf.ref('TaskingManagerSMTPHost') },
+          { 'Name': 'TM_SMTP_PORT', 'Value': cf.ref('TaskingManagerSMTPPort') },
+          { 'Name': 'TM_SMTP_USER', 'Value': cf.ref('TaskingManagerSMTPUser') },
+          { 'Name': 'TM_EMAIL_FROM_ADDRESS', 'Value': cf.ref('TaskingManagerEmailFromAddress') },
+          { 'Name': 'TM_EMAIL_CONTACT_ADDRESS', 'Value': cf.ref('TaskingManagerEmailContactAddress') },
+          { 'Name': 'TM_ORG_NAME', 'Value': cf.ref('TaskingManagerOrgName') },
+          { 'Name': 'TM_ORG_CODE', 'Value': cf.ref('TaskingManagerOrgCode') },
+          { 'Name': 'TM_ORG_LOGO', 'Value': cf.ref('TaskingManagerLogo') },
+          { 'Name': 'TM_IMAGE_UPLOAD_API_URL', 'Value': cf.ref('TaskingManagerImageUploadAPIURL') },
+          { 'Name': 'TM_SENTRY_BACKEND_DSN', 'Value': cf.ref('SentryBackendDSN') },
+        ],
+        Secrets: [
+          { 'Name': 'POSTGRES_PASSWORD', 'ValueFrom': cf.ref('PostgresPasswordManagedSecret') },
+          { 'Name': 'TM_SMTP_PASSWORD', 'ValueFrom': cf.ref('SMTPPassword') },
+          { 'Name': 'TM_SECRET', 'ValueFrom': cf.ref('TaskingManagerManagedSecret') },
+          { 'Name': 'TM_CONSUMER_SECRET', 'ValueFrom': cf.ref('OAuth2ConsumerSecret') },
+          { 'Name': 'NEW_RELIC_LICENSE_KEY', 'ValueFrom': cf.ref('NewRelicLicenseKey') },
+          { 'Name': 'TM_IMAGE_UPLOAD_API_KEY', 'ValueFrom': cf.ref('ImageUploadAPIKey') }
+        ],
         EnvironmentFiles: [],
         Essential: true,
         // HealthCheck: {
           // Need more input from Yogesh
         // },
-        Image: 'quay.io/hotosm/taskingmanager:latest', //configure this properly
-
+        Image: 'quay.io/hotosm/taskingmanager:develop', //configure this properly
       }],
       Cpu: '1024', 
       ExecutionRoleArn: cf.ref('TaskingManagerECSExecutionRole'),
@@ -311,7 +378,27 @@ const Resources = {
             }
           ]
         }
-      }],
+      },
+      {
+        PolicyName: "secretspolicy2",
+        PolicyDocument: {
+          Version: "2012-10-17",
+          Statement: [
+            {
+              Effect: "Allow",
+              Action: "secretsmanager:GetSecretValue",
+              Resource: [
+                cf.join(':', ['arn:aws:secretsmanager', cf.region, cf.accountId, 'secret', cf.ref('PostgresPasswordManagedSecret')])
+              ]
+            },
+            {
+              Effect: "Allow",
+              Action: "secretsmanager:ListSecrets",
+              Resource: "*"
+            }
+         ]
+      } }
+      ],
       RoleName: cf.join('-', [cf.stackName, 'ecs', 'execution-role'])
     }
       // grants the Amazon ECS container agent permission to make AWS API calls - cloudwatch logs, secrets
@@ -424,14 +511,27 @@ const Resources = {
       Protocol: 'HTTP'
     }
   },
+  TaskingManagerRDSSecret: {
+    Type: 'AWS::SecretsManager::Secret',
+    Properties: {
+      Description: 'Experiment to create a secret via template',
+      Name: 'demo/tm-rds-secret',
+      GenerateSecretString: {
+        PasswordLength: 32,
+        ExcludePunctuation: true,
+        SecretStringTemplate: '{"username": "taskingmanager", "engine": "postgres", "port": 5432}',
+        GenerateStringKey: 'password'
+      }
+    }
+  },
   TaskingManagerRDS: {
     Type: 'AWS::RDS::DBInstance',
     Properties: {
         Engine: 'postgres',
         DBName: cf.if('UseASnapshot', cf.noValue, cf.ref('PostgresDB')),
-        EngineVersion: '11.5',
-        MasterUsername: cf.if('UseASnapshot', cf.noValue, cf.ref('PostgresUser')),
-        MasterUserPassword: cf.if('UseASnapshot', cf.noValue, cf.ref('PostgresPassword')),
+        EngineVersion: '11.10',
+        MasterUsername: cf.if('UseASnapshot', cf.noValue, cf.join(':', ['{{resolve:secretsmanager', cf.ref('TaskingManagerRDSSecret'), 'SecretString:username}}'])),
+        MasterUserPassword: cf.if('UseASnapshot', cf.noValue, cf.join(':', ['{{resolve:secretsmanager', cf.ref('TaskingManagerRDSSecret'), 'SecretString:password}}'])),
         AllocatedStorage: cf.ref('DatabaseSize'),
         BackupRetentionPeriod: 10,
         StorageType: 'gp2',
@@ -440,6 +540,14 @@ const Resources = {
         DBInstanceClass: cf.if('IsTaskingManagerProduction', 'db.t3.2xlarge', 'db.t2.small'),
         DBSnapshotIdentifier: cf.if('UseASnapshot', cf.ref('DBSnapshot'), cf.noValue),
         VPCSecurityGroups: [cf.importValue(cf.join('-', ['hotosm-network-production', cf.ref('NetworkEnvironment'), 'ec2s-security-group', cf.region]))],
+    }
+  },
+  SecretRDSInstanceAttachment: {
+    Type: 'AWS::SecretsManager::SecretTargetAttachment',
+    Properties: {
+      SecretId: cf.ref('TaskingManagerRDSSecret'),
+      TargetId: cf.ref('TaskingManagerRDS'),
+      TargetType: 'AWS::RDS::DBInstance'
     }
   },
   TaskingManagerReactBucket: {
@@ -531,6 +639,7 @@ const Resources = {
   },
   TaskingManagerRoute53: {
     Type: 'AWS::Route53::RecordSet',
+    Condition: 'IsHOTOSMUrl',
     Properties: {
       Name: cf.ref('TaskingManagerURL'),
       Type: 'A',
